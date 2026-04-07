@@ -211,7 +211,7 @@ class AbstractNTLoss(ABC):
         loss_weights = (
             loss_weights[number_token_positions]
             if loss_weights is not None
-            else torch.ones_like(labels, device=labels.device)[number_token_positions]
+            else torch.ones(int(number_token_positions.sum()),device=labels.device)
         )
         return cast(FloatTensor, y), loss_weights
 
@@ -255,7 +255,7 @@ class AbstractNTLoss(ABC):
             loss = torch.dot(loss.flatten(), loss_weights.flatten())
         elif reduction == "none":
             # Cast loss for number tokens back to Tensor of size BS x T
-            loss_ = torch.zeros(number_token_positions.numel()).to(loss.device)
+            loss_ = torch.zeros(number_token_positions.numel(), device=loss.device, dtype=loss.dtype)
             loss_[number_token_positions.view(-1)] = loss * loss_weights
             bs, seq_len, _ = logits.size()
             loss = loss_.view(bs, seq_len)
@@ -707,6 +707,10 @@ class NumberLevelLoss(NTLossDotProduct):
         if not is_digit.any():
             return y, yhat, number_token_positions
 
+        # If previous token is a digit => continuation for digits (and for dot-between-digits in float mode)
+        digit_prev = torch.zeros((B, T), dtype=torch.bool, device=device)
+        digit_prev[:, 1:] = is_digit[:, :-1]
+
         # -------------------------------------------------------------------------
         # 1) Decide which tokens are considered "inside a number span"
         # -------------------------------------------------------------------------
@@ -717,9 +721,6 @@ class NumberLevelLoss(NTLossDotProduct):
             is_dot = labels.eq(self.dot)  # (B, T)
 
             # dot is part of a number span only if it is *between* digits: d . d
-            digit_prev = torch.zeros((B, T), dtype=torch.bool, device=device)
-            digit_prev[:, 1:] = is_digit[:, :-1]
-
             digit_next = torch.zeros((B, T), dtype=torch.bool, device=device)
             digit_next[:, :-1] = is_digit[:, 1:]
 
@@ -733,13 +734,7 @@ class NumberLevelLoss(NTLossDotProduct):
         # -------------------------------------------------------------------------
         # 2) Build a "continuation" mask: does position t continue a span from t-1?
         # -------------------------------------------------------------------------
-        # If previous token is a digit => continuation for digits (and for dot-between-digits in float mode)
-        digit_prev = torch.zeros((B, T), dtype=torch.bool, device=device)
-        digit_prev[:, 1:] = is_digit[:, :-1]
-
         if self.float_level:
-            is_dot = labels.eq(self.dot)
-
             dot_prev = torch.zeros((B, T), dtype=torch.bool, device=device)
             dot_prev[:, 1:] = is_dot[:, :-1]
 
@@ -909,8 +904,13 @@ class NumberLevelLoss(NTLossDotProduct):
             y, yhat, number_token_positions, labels
         )
         if loss_weights is None:
-            loss_weights = torch.ones_like(labels, dtype=logits.dtype)
-        loss_weights = loss_weights[number_token_positions]
+            loss_weights = torch.ones(
+                int(number_token_positions.sum()),
+                device=labels.device,
+                dtype=logits.dtype,
+            )
+        else:
+            loss_weights = loss_weights[number_token_positions]
 
         # NOTE: Alternative could be to apply specified loss function to normalized yhat
         # loss = self.loss_function(torch.div(
